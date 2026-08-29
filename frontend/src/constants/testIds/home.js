@@ -1,6 +1,18 @@
-// Test IDs for the home / landing feature. Naming follows the directive
-// in ./auth.js (keys camelCase, values kebab-case `<feature>-<element>`).
-
+// Test IDs untuk fitur publik (P10). Konvensi: key camelCase, value kebab-case.
 export const HOME = {
-	emergentLink: 'home-emergent-link',
+  emergentLink: "home-emergent-link",
+  ctaQuote: "home-cta-quote",
+  ctaCalc: "home-cta-calc",
+  heroEstimator: "hero-trip-estimator",
+  fleetGrid: "home-fleet-grid",
+  destGrid: "home-dest-grid",
+  stats: "home-stats",
+  faq: "home-faq",
+};
+
+export const PUBLIC_NAV = {
+  themeSwitch: "nav-theme-switch",
+  whatsapp: "nav-whatsapp-cta",
+  phone: "nav-phone-cta",
+  megamenu: "public-megamenu",
 };

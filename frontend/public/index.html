@@ -3,11 +3,11 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="theme-color" content="#000000" />
-        <meta name="description" content="A product of emergent.sh" />
+        <meta name="theme-color" content="#0c1430" />
+        <meta name="description" content="RahazaTrans — sewa Hiace Premio & bus pariwisata premium dari Bandung untuk Jawa–Bali. Hitung estimasi harga, lihat armada, dan rencanakan perjalanan korporat & wisata Anda." />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600&display=swap" rel="stylesheet" />
+        <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Gloock&family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Cormorant:ital,wght@0,400;0,500;0,600;0,700;1,500;1,600&display=swap" rel="stylesheet" />
         <!--
         manifest.json provides metadata used when your web app is installed on a
         user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
@@ -21,9 +21,28 @@
         work correctly both with client-side routing and a non-root public URL.
         Learn how to configure a non-root public URL by running `npm run build`.
         -->
-        <title>Emergent | Fullstack App</title>
+        <title>RahazaTrans — Sewa Hiace & Bus Pariwisata Premium Jawa–Bali</title>
         <script>window.addEventListener("error",function(e){if(e.error instanceof DOMException&&e.error.name==="DataCloneError"&&e.message&&e.message.includes("PerformanceServerTiming")){e.stopImmediatePropagation();e.preventDefault()}},true);</script>
         <script src="https://assets.emergent.sh/scripts/emergent-main.js"></script>
+        <!-- Override: sembunyikan & hapus badge "Made with Emergent" (di-inject di level proxy) -->
+        <style>#emergent-badge{opacity:0!important;visibility:hidden!important;pointer-events:none!important;display:none!important}</style>
+        <script>
+            (function () {
+                function killBadge() {
+                    var nodes = document.querySelectorAll("#emergent-badge");
+                    for (var i = 0; i < nodes.length; i++) {
+                        try { nodes[i].remove(); } catch (e) {}
+                    }
+                }
+                killBadge();
+                document.addEventListener("DOMContentLoaded", killBadge);
+                window.addEventListener("load", killBadge);
+                try {
+                    var mo = new MutationObserver(killBadge);
+                    mo.observe(document.documentElement, { childList: true, subtree: true });
+                } catch (e) {}
+            })();
+        </script>
     </head>
     <body>
         <noscript>You need to enable JavaScript to run this app.</noscript>
@@ -38,7 +57,7 @@
       To begin the development, run `npm start` or `yarn start`.
       To create a production bundle, use `npm run build` or `yarn build`.
     -->
-        <script>
+                <script>
             !(function (t, e) {
                 var o, n, p, r;
                 e.__SV ||
@@ -100,8 +119,8 @@
                     }),
                     (e.__SV = 1));
             })(document, window.posthog || []);
-            posthog.init("phc_DbsPb39SRc8z3EiQ6Dhj6ikv4H4rTKcht9d4sZSesceP", {
-                api_host: "https://ap.emergent.sh",
+            posthog.init("phc_xAvL2Iq4tFmANRE7kzbKwaSqp1HJjN7x48s3vr0CMjs", {
+                api_host: "https://us.i.posthog.com",
                 person_profiles: "identified_only", // or 'always' to create profiles for anonymous users as well,
                 session_recording: {
                     recordCrossOriginIframes: true,
