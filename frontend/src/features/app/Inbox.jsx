@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Inbox as InboxIcon, Send, StickyNote, Globe, MessageCircle, Phone, Check, CheckCheck,
-  UserCheck, Search, Loader2, ChevronLeft, Clock, Ban, ShieldCheck, Sparkles, Zap,
+  UserCheck, Search, Loader2, ChevronLeft, Clock, Ban, ShieldCheck, Sparkles, Zap, Paperclip, X, FileText,
 } from "lucide-react";
 import { toast } from "sonner";
 import apiClient from "@/services/apiClient";
@@ -37,6 +37,8 @@ export default function Inbox() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [draft, setDraft] = useState("");
   const [internal, setInternal] = useState(false);
+  const [attachFile, setAttachFile] = useState(null);
+  const fileRef = useRef(null);
   const [sending, setSending] = useState(false);
   const [users, setUsers] = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -81,9 +83,26 @@ export default function Inbox() {
   const openConv = (c) => setActiveId(c.id);
 
   const send = async (payload) => {
+    if (!activeId) return;
+    if (!payload && attachFile && !internal) {
+      setSending(true);
+      try {
+        const fd = new FormData();
+        fd.append("file", attachFile);
+        fd.append("caption", draft.trim());
+        await apiClient.post(`/conversations/${activeId}/wa-media`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+        setDraft(""); setAttachFile(null);
+        if (fileRef.current) fileRef.current.value = "";
+        await loadThread(activeId);
+        loadList();
+        toast.success("Lampiran terkirim via WhatsApp");
+      } catch (e) {
+        toast.error(e?.response?.data?.detail || "Gagal mengirim lampiran");
+      } finally { setSending(false); }
+      return;
+    }
     const body = payload || { body: draft.trim(), internal };
     if (!body.body && !body.template_key) return;
-    if (!activeId) return;
     setSending(true);
     try {
       await apiClient.post(`/conversations/${activeId}/messages`, body);
@@ -93,6 +112,13 @@ export default function Inbox() {
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Gagal mengirim pesan");
     } finally { setSending(false); }
+  };
+
+  const pickFile = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { toast.error("Ukuran file maksimal 8 MB"); e.target.value = ""; return; }
+    setAttachFile(f);
   };
 
   const sendTemplate = (key) => {
@@ -278,6 +304,11 @@ export default function Inbox() {
                     return (
                       <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`} data-testid={`inbox-msg-${m.id}`}>
                         <div className={`max-w-[75%] rounded-2xl px-3.5 py-2 ${mine ? "bg-[#007AFF] text-white" : "border border-[#EFF0F2] bg-white text-[#1C1C1E]"}`}>
+                          {m.attachment ? (
+                            <p className={`mb-1 flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11.5px] font-semibold ${mine ? "bg-white/15" : "bg-[#F2F2F5]"}`} data-testid={`inbox-msg-attachment-${m.id}`}>
+                              <FileText size={12} /> {m.attachment.filename || "Lampiran"}
+                            </p>
+                          ) : null}
                           <p className="text-[13px] leading-snug">{m.body}</p>
                           <div className={`mt-0.5 flex items-center gap-1 text-[10px] ${mine ? "text-white/70" : "text-[#A0A0A8]"}`}>
                             <span>{formatDateTime(m.created_at)}</span>
@@ -299,6 +330,21 @@ export default function Inbox() {
                     className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${internal ? "bg-[#FFF1D6] text-[#C25400]" : "bg-[#F2F2F5] text-[#6B6B73]"}`}>
                     <StickyNote size={12} /> {internal ? "Catatan internal" : "Balas ke kontak"}
                   </button>
+                  {active.channel === "whatsapp" && !internal ? (
+                    <>
+                      <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden" onChange={pickFile} data-testid="inbox-attach-input" />
+                      <button onClick={() => fileRef.current?.click()} data-testid="inbox-attach-btn"
+                        className="flex items-center gap-1 rounded-full bg-[#F2F2F5] px-2.5 py-1 text-[11px] font-semibold text-[#6B6B73] transition hover:bg-[#E8E8EC]">
+                        <Paperclip size={12} /> Lampiran
+                      </button>
+                      {attachFile ? (
+                        <span className="flex items-center gap-1 rounded-full bg-[#D6F5DE] px-2.5 py-1 text-[11px] font-semibold text-[#127A36]" data-testid="inbox-attach-chip">
+                          <FileText size={11} /> {attachFile.name}
+                          <button onClick={() => { setAttachFile(null); if (fileRef.current) fileRef.current.value = ""; }} data-testid="inbox-attach-remove"><X size={11} /></button>
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
                   {active.channel === "whatsapp" && !internal && templates.length > 0 ? (
                     <Select value="none" onValueChange={sendTemplate}>
                       <SelectTrigger className="!h-7 w-[180px] text-[11px]" data-testid="inbox-template-select"><Zap size={12} className="mr-1 text-[#25D366]" /><SelectValue placeholder="Kirim template" /></SelectTrigger>
@@ -311,10 +357,10 @@ export default function Inbox() {
                 </div>
                 <div className="flex items-end gap-2">
                   <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={2}
-                    placeholder={internal ? "Tulis catatan internal (tidak terkirim ke kontak)…" : "Tulis balasan…"}
+                    placeholder={internal ? "Tulis catatan internal (tidak terkirim ke kontak)…" : attachFile ? "Caption lampiran (opsional)…" : "Tulis balasan…"}
                     onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
                     data-testid="inbox-composer" />
-                  <button className="primary-button !h-10" disabled={sending || !draft.trim()} onClick={() => send()} data-testid="inbox-send">
+                  <button className="primary-button !h-10" disabled={sending || (!draft.trim() && !attachFile)} onClick={() => send()} data-testid="inbox-send">
                     {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
                   </button>
                 </div>

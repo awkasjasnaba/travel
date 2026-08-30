@@ -4,6 +4,7 @@ Koleksi kanonik: `invoices`. FK: booking_id→bookings (wajib), customer_id→cu
 INV-8: number unik berurutan (INV-0001, ...). Akses section 'finance'.
 Urutan route: literal & sub-path didefinisikan sebelum param generik.
 """
+import base64
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
 
@@ -80,6 +81,64 @@ async def export_invoice(invoice_id: str, format: str = Query(default="pdf"), us
         fname = f"{number}.pdf"
     return StreamingResponse(BytesIO(data), media_type=media,
                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+async def _resolve_customer_phone(db, inv):
+    booking = await db.bookings.find_one({"id": inv.get("booking_id")}, {"_id": 0}) or {}
+    phone = booking.get("customer_phone") or ""
+    cust_id = inv.get("customer_id") or booking.get("customer_id")
+    if not phone and cust_id:
+        cust = await db.customers.find_one({"id": cust_id}, {"_id": 0, "phone": 1})
+        phone = (cust or {}).get("phone") or ""
+    return phone
+
+
+async def _send_invoice_wa(db, inv, user):
+    """Kirim PDF invoice via WhatsApp ke pelanggan (provider aktif). Raise 400 bila gagal."""
+    phone = await _resolve_customer_phone(db, inv)
+    if not phone:
+        raise HTTPException(status_code=400, detail="Nomor WhatsApp pelanggan tidak ditemukan")
+    pdf = invoice_pdf(inv)
+    data_url = "data:application/pdf;base64," + base64.b64encode(pdf).decode()
+    due = (inv.get("due_at") or "")[:10]
+    amount_txt = f"Rp {int(inv.get('amount', 0) or 0):,}".replace(",", ".")
+    caption = (f"Halo {inv.get('customer_name') or 'Pelanggan'}, berikut invoice {inv.get('number')} "
+               f"sebesar {amount_txt} untuk booking {inv.get('booking_code')}."
+               + (f" Jatuh tempo {due}." if due else "") + " Terima kasih! 🙏")
+    from services.whatsapp import send_wa
+    res = await send_wa(db, phone, text=caption, customer_id=inv.get("customer_id"),
+                        contact_name=inv.get("customer_name"), source="invoice",
+                        author_id=user.get("id"), media_data=data_url,
+                        media_filename=f"{inv.get('number', 'invoice')}.pdf")
+    if res.get("status") == "skipped":
+        raise HTTPException(status_code=400, detail="Kontak telah opt-out WhatsApp")
+    if res.get("status") not in ("sent", "delivered", "read"):
+        raise HTTPException(status_code=400, detail=res.get("error") or "Gagal mengirim invoice via WhatsApp")
+    if inv.get("status") == "draft":
+        await db.invoices.update_one({"id": inv["id"]}, {"$set": {"status": "sent"}})
+    await record(db, actor=user, action="send", entity_type="invoice", entity_id=inv["id"],
+                 summary=f"Kirim invoice {inv.get('number')} via WhatsApp ke {phone}")
+    return {"ok": True, "number": inv.get("number"), **res}
+
+
+@router.post("/invoices/{invoice_id}/send-wa")
+async def send_invoice_wa(invoice_id: str, user=Depends(FIN)):
+    db = get_db()
+    inv = await db.invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice tidak ditemukan")
+    return await _send_invoice_wa(db, inv, user)
+
+
+@router.post("/bookings/{booking_id}/send-invoice-wa")
+async def send_booking_invoice_wa(booking_id: str, user=Depends(FIN)):
+    """Kirim invoice TERBARU milik booking via WhatsApp (tombol di halaman Booking)."""
+    db = get_db()
+    inv = await db.invoices.find_one({"booking_id": booking_id}, {"_id": 0}, sort=[("created_at", -1)])
+    if not inv:
+        raise HTTPException(status_code=404,
+                            detail="Belum ada invoice untuk booking ini — buat dulu di Keuangan → Invoice")
+    return await _send_invoice_wa(db, inv, user)
 
 
 @router.patch("/invoices/{invoice_id}")

@@ -312,6 +312,7 @@ function Invoices({ onChanged }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [open, setOpen] = useState(false);
+  const [waBusy, setWaBusy] = useState("");
 
   const load = useCallback(() => {
     setLoading(true);
@@ -325,6 +326,16 @@ function Invoices({ onChanged }) {
   const setStatus = async (id, status) => {
     try { await apiClient.patch(`/invoices/${id}`, { status }); toast.success("Status invoice diperbarui"); load(); onChanged && onChanged(); }
     catch (e) { toast.error("Gagal memperbarui status"); }
+  };
+
+  const sendWa = async (id) => {
+    setWaBusy(id);
+    try {
+      const r = await apiClient.post(`/invoices/${id}/send-wa`);
+      toast.success(`Invoice ${r.data?.number || ""} terkirim via WhatsApp`);
+      load(); onChanged && onChanged();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Gagal mengirim invoice via WhatsApp"); }
+    finally { setWaBusy(""); }
   };
 
   const addBtn = (
@@ -359,6 +370,7 @@ function Invoices({ onChanged }) {
                           {Object.entries(INV_STATUS).map(([v, o]) => <SelectItem key={v} value={v}>{o.l}</SelectItem>)}
                         </SelectContent>
                       </Select>
+                      <button className="icon-button !h-8 !w-8 !text-[#127A36]" title="Kirim PDF via WhatsApp" disabled={waBusy === inv.id} onClick={() => sendWa(inv.id)} data-testid={`invoice-wa-${inv.id}`}>{waBusy === inv.id ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}</button>
                       <button className="icon-button !h-8 !w-8" title="Unduh PDF" onClick={() => downloadFile(`/invoices/${inv.id}/export?format=pdf`, `${inv.number}.pdf`)} data-testid={`invoice-pdf-${inv.id}`}><Download size={14} /></button>
                       <button className="icon-button !h-8 !w-8" title="Unduh Excel" onClick={() => downloadFile(`/invoices/${inv.id}/export?format=excel`, `${inv.number}.xlsx`)} data-testid={`invoice-xlsx-${inv.id}`}><FileSpreadsheet size={14} /></button>
                     </div>

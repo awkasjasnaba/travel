@@ -4,7 +4,9 @@ Koleksi `conversations` + `messages`. Thread chat, status pesan (sent/delivered/
 assign agen, catatan internal, filter (unassigned/mine/all), web-chat (kanal web) +
 WA SIMULASI. Akses owner/ops_admin (section 'crm'). Urutan rute: literal sebelum param.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+import base64
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from core_utils import new_id, now_iso, safe_doc
 from db import get_db
@@ -163,6 +165,41 @@ async def post_message(conversation_id: str, body: MessageCreate, user=Depends(C
                                 author_id=user.get("id"), internal=bool(body.internal),
                                 status="sent" if body.internal else "delivered")
     out = safe_doc(msg)
+    out["author_name"] = user.get("name")
+    return out
+
+
+ALLOWED_MEDIA = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
+MAX_MEDIA_BYTES = 8 * 1024 * 1024
+
+
+@router.post("/conversations/{conversation_id}/wa-media")
+async def post_wa_media(conversation_id: str, file: UploadFile = File(...),
+                        caption: str = Form(default=""), user=Depends(CRM)):
+    """Kirim gambar/PDF ke kontak WA dari Inbox (caption opsional). Maks 8 MB."""
+    db = get_db()
+    conv = await db.conversations.find_one({"id": conversation_id}, {"_id": 0})
+    if not conv:
+        raise HTTPException(status_code=404, detail="Percakapan tidak ditemukan")
+    if conv.get("channel") != "whatsapp":
+        raise HTTPException(status_code=400, detail="Lampiran hanya untuk percakapan WhatsApp")
+    mime = (file.content_type or "").lower()
+    if mime not in ALLOWED_MEDIA:
+        raise HTTPException(status_code=400, detail="Tipe file tidak didukung (JPG/PNG/WebP/PDF)")
+    raw = await file.read()
+    if len(raw) > MAX_MEDIA_BYTES:
+        raise HTTPException(status_code=400, detail="Ukuran file maksimal 8 MB")
+    data_url = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+    from services.whatsapp import send_wa
+    res = await send_wa(db, conv.get("contact_phone"), text=(caption or "").strip() or None,
+                        conversation_id=conversation_id, author_id=user.get("id"), source="agent",
+                        media_data=data_url, media_filename=file.filename or "lampiran")
+    if res.get("status") == "skipped":
+        raise HTTPException(status_code=400, detail="Kontak telah memilih berhenti (opt-out) WhatsApp")
+    if res.get("status") in (None, "failed"):
+        raise HTTPException(status_code=400, detail=res.get("error") or "Gagal mengirim lampiran WhatsApp")
+    msg = await db.messages.find_one({"id": res.get("message_id")}, {"_id": 0})
+    out = safe_doc(msg or {})
     out["author_name"] = user.get("name")
     return out
 

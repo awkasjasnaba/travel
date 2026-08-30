@@ -1,9 +1,15 @@
-"""routers/broadcasts.py — Broadcast WhatsApp (struktur, Phase 4).
+"""routers/broadcasts.py — Broadcast WhatsApp NYATA (via provider WA aktif).
 
 Akses owner/ops_admin (section 'crm'). Segmentasi audiens berbasis koleksi `leads`
-(stage/source). Pengiriman = SIMULASI (mock): menandai 'sent' + recipients_count
-terhitung dari segmen. Integrasi WA nyata = fase lanjutan.
+(stage/source). Pengiriman berjalan di background dengan JEDA ACAK antar pesan
+(anti-banned utk provider nyata openwa/meta_cloud); progres (sent/failed/skipped)
+di-update per penerima sehingga UI bisa mem-poll. Provider mock = tanpa jeda.
+Pesan mendukung variabel {customer_name} & {company}.
 """
+import asyncio
+import logging
+import random
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core_utils import new_id, now_iso, safe_doc
@@ -12,8 +18,13 @@ from dependencies import require_section
 from schemas import BroadcastCreate
 from services.audit import record
 
+logger = logging.getLogger("travel_fleet.broadcasts")
 router = APIRouter(prefix="/api", tags=["broadcasts"])
 CRM = require_section("crm")
+
+# Jeda acak antar pesan (detik) utk provider nyata — pola manusiawi, hindari deteksi spam.
+THROTTLE_MIN, THROTTLE_MAX = 4.0, 9.0
+MAX_RECIPIENTS = 2000
 
 
 def _segment_query(stage, source):
@@ -48,18 +59,71 @@ async def create_broadcast(body: BroadcastCreate, user=Depends(CRM)):
     return safe_doc(doc)
 
 
+async def _run_broadcast(broadcast_id):
+    """Worker background: kirim per-penerima via send_wa + jeda anti-banned + progres."""
+    db = get_db()
+    try:
+        b = await db.broadcasts.find_one({"id": broadcast_id}, {"_id": 0})
+        if not b:
+            return
+        seg = b.get("segment") or {}
+        q = _segment_query(seg.get("stage"), seg.get("source"))
+        q["phone"] = {"$nin": [None, ""]}
+        leads = await db.leads.find(q, {"_id": 0, "id": 1, "phone": 1, "customer_name": 1}) \
+                              .to_list(MAX_RECIPIENTS)
+        from services.whatsapp import get_config, send_wa
+        cfg = await get_config(db)
+        real = cfg.get("provider") in ("openwa", "meta_cloud")
+        sent = failed = skipped = 0
+        for i, ld in enumerate(leads):
+            try:
+                res = await send_wa(db, ld.get("phone"), text=b.get("message"),
+                                    variables={"customer_name": ld.get("customer_name") or ""},
+                                    lead_id=ld.get("id"), contact_name=ld.get("customer_name"),
+                                    source="broadcast")
+                st = res.get("status")
+                if st in ("sent", "delivered", "read"):
+                    sent += 1
+                elif st == "skipped":
+                    skipped += 1
+                else:
+                    failed += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("broadcast %s kirim gagal: %s", broadcast_id, exc)
+                failed += 1
+            await db.broadcasts.update_one({"id": broadcast_id}, {"$set": {
+                "sent_count": sent, "failed_count": failed, "skipped_count": skipped}})
+            if real and i < len(leads) - 1:
+                await asyncio.sleep(random.uniform(THROTTLE_MIN, THROTTLE_MAX))
+        await db.broadcasts.update_one({"id": broadcast_id}, {"$set": {
+            "status": "sent", "sent_at": now_iso(), "recipients_count": len(leads),
+            "sent_count": sent, "failed_count": failed, "skipped_count": skipped}})
+        logger.info("broadcast %s selesai: sent=%d failed=%d skipped=%d",
+                    broadcast_id, sent, failed, skipped)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("broadcast %s worker error: %s", broadcast_id, exc)
+        await db.broadcasts.update_one({"id": broadcast_id}, {"$set": {
+            "status": "failed", "error": str(exc)[:200]}})
+
+
 @router.post("/broadcasts/{broadcast_id}/send")
 async def send_broadcast(broadcast_id: str, user=Depends(CRM)):
     db = get_db()
-    b = await db.broadcasts.find_one({"id": broadcast_id})
+    # Klaim atomik draft/failed → sending: klik ganda / dua admin tidak menggandakan kiriman.
+    b = await db.broadcasts.find_one_and_update(
+        {"id": broadcast_id, "status": {"$in": ["draft", "failed"]}},
+        {"$set": {"status": "sending", "send_started_at": now_iso(),
+                  "sent_count": 0, "failed_count": 0, "skipped_count": 0, "error": None}})
     if not b:
-        raise HTTPException(status_code=404, detail="Broadcast tidak ditemukan")
-    if b.get("status") == "sent":
-        raise HTTPException(status_code=400, detail="Broadcast sudah dikirim")
+        if not await db.broadcasts.find_one({"id": broadcast_id}, {"_id": 1}):
+            raise HTTPException(status_code=404, detail="Broadcast tidak ditemukan")
+        raise HTTPException(status_code=400, detail="Broadcast sudah/sedang dikirim")
     seg = b.get("segment") or {}
-    recipients = await db.leads.count_documents(_segment_query(seg.get("stage"), seg.get("source")))
-    await db.broadcasts.update_one({"id": broadcast_id}, {"$set": {
-        "status": "sent", "recipients_count": recipients, "sent_at": now_iso()}})
+    q = _segment_query(seg.get("stage"), seg.get("source"))
+    q["phone"] = {"$nin": [None, ""]}
+    recipients = await db.leads.count_documents(q)
+    await db.broadcasts.update_one({"id": broadcast_id}, {"$set": {"recipients_count": recipients}})
+    asyncio.create_task(_run_broadcast(broadcast_id))
     await record(db, actor=user, action="send", entity_type="broadcast", entity_id=broadcast_id,
-                 summary=f"Kirim broadcast '{b.get('title')}' ke {recipients} penerima (simulasi)")
+                 summary=f"Mulai kirim broadcast '{b.get('title')}' ke {recipients} penerima")
     return safe_doc(await db.broadcasts.find_one({"id": broadcast_id}, {"_id": 0}))

@@ -60,6 +60,10 @@ class WhatsAppProvider:
     async def send_template(self, to, template_key, variables, body=None):
         raise NotImplementedError
 
+    async def send_file(self, to, media, filename, caption):
+        return {"status": "failed", "provider": self.name,
+                "error": "Provider ini belum mendukung kirim media (gambar/PDF)"}
+
     def parse_webhook(self, payload):
         raise NotImplementedError
 
@@ -78,6 +82,11 @@ class MockProvider(WhatsAppProvider):
     async def send_template(self, to, template_key, variables, body=None):
         res = await self.send_text(to, template_key)
         res["template_key"] = template_key
+        return res
+
+    async def send_file(self, to, media, filename, caption):
+        res = await self.send_text(to, caption or filename or "lampiran")
+        res["attachment"] = filename
         return res
 
     def parse_webhook(self, payload):
@@ -174,16 +183,12 @@ class OpenWaProvider(WhatsAppProvider):
             digits = "62" + digits[1:]
         return f"{digits}@c.us" if digits else ""
 
-    async def send_text(self, to, text):
+    async def _call(self, method, args, timeout=30):
         from services import openwa as ow
-        chat_id = self._chat_id(to)
-        if not chat_id:
-            return {"status": "failed", "provider": self.name, "error": "Nomor tujuan tidak valid"}
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.post(f"{ow.base_url()}/api/messages/sendText",
-                                      json={"args": {"to": chat_id, "content": text or ""}},
-                                      headers=ow.headers())
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(f"{ow.base_url()}/api/messages/{method}",
+                                      json={"args": args}, headers=ow.headers())
         except Exception as exc:  # noqa: BLE001
             return {"status": "failed", "provider": self.name,
                     "error": f"Sidecar OpenWA tidak terjangkau ({str(exc)[:100]}). "
@@ -206,6 +211,25 @@ class OpenWaProvider(WhatsAppProvider):
             elif isinstance(res, dict):
                 wamid = res.get("id") or res.get("_serialized")
         return {"status": "sent", "wa_message_id": wamid, "cost": 0.0, "provider": self.name}
+
+    async def send_text(self, to, text):
+        chat_id = self._chat_id(to)
+        if not chat_id:
+            return {"status": "failed", "provider": self.name, "error": "Nomor tujuan tidak valid"}
+        return await self._call("sendText", {"to": chat_id, "content": text or ""})
+
+    async def send_file(self, to, media, filename, caption):
+        chat_id = self._chat_id(to)
+        if not chat_id:
+            return {"status": "failed", "provider": self.name, "error": "Nomor tujuan tidak valid"}
+        is_image = str(media or "").startswith("data:image/")
+        if is_image:
+            args = {"to": chat_id, "imgData": media, "filename": filename or "gambar.jpg",
+                    "caption": caption or ""}
+            return await self._call("sendImage", args, timeout=60)
+        args = {"to": chat_id, "file": media, "filename": filename or "dokumen.pdf",
+                "caption": caption or ""}
+        return await self._call("sendFile", args, timeout=60)
 
     async def send_template(self, to, template_key, variables, body=None):
         # OpenWA tak butuh template approval Meta — kirim isi ter-render sebagai teks biasa.
@@ -349,8 +373,11 @@ async def ensure_conversation(db, phone, *, name=None, lead_id=None, customer_id
 
 async def send_wa(db, to_phone, *, text=None, template_key=None, variables=None,
                   conversation_id=None, lead_id=None, customer_id=None, contact_name=None,
-                  source="agent", author_id=None):
-    """Kirim WA (provider aktif) + catat ke Inbox dgn cost/status. Tak pernah raise."""
+                  source="agent", author_id=None, media_data=None, media_filename=None):
+    """Kirim WA (provider aktif) + catat ke Inbox dgn cost/status. Tak pernah raise.
+
+    media_data (data URL base64) + media_filename → kirim gambar/dokumen (caption = text).
+    """
     try:
         cfg = await get_config(db)
         provider = _provider_for(cfg)
@@ -376,7 +403,9 @@ async def send_wa(db, to_phone, *, text=None, template_key=None, variables=None,
             return {"status": "skipped", "reason": "opt_out", "conversation_id": conv["id"]}
         within = _within_session(conv)
         try:
-            if used_template:
+            if media_data:
+                res = await provider.send_file(to_phone, media_data, media_filename, body)
+            elif used_template:
                 res = await provider.send_template(to_phone, used_template, variables, body=body)
             else:
                 res = await provider.send_text(to_phone, body)
@@ -392,10 +421,12 @@ async def send_wa(db, to_phone, *, text=None, template_key=None, variables=None,
             "wa_message_id": res.get("wa_message_id"), "cost": cost, "template_key": used_template,
             "provider": provider.name, "source": source, "error": res.get("error"),
             "outside_session": (not within and not used_template), "created_at": now,
+            "attachment": ({"filename": media_filename or "lampiran"} if media_data else None),
         }
         await db.messages.insert_one(msg)
+        preview = (f"📎 {media_filename or 'lampiran'}" + (f" · {body}" if body else "")) if media_data else body
         await db.conversations.update_one({"id": conv["id"]}, {
-            "$set": {"last_message_at": now, "last_message_preview": body[:120]},
+            "$set": {"last_message_at": now, "last_message_preview": preview[:120]},
             "$inc": {"total_cost": cost}})
         return {"status": res.get("status"), "conversation_id": conv["id"], "message_id": msg["id"],
                 "cost": cost, "within_session": within, "provider": provider.name,

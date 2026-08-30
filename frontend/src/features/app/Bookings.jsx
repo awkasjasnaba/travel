@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CalendarRange, Plus, Wallet, Pencil, CalendarClock, ShieldCheck, Users, Clock } from "lucide-react";
+import { CalendarRange, Plus, Wallet, Pencil, CalendarClock, ShieldCheck, Users, Clock, MessageCircle } from "lucide-react";
 import { useResource } from "@/hooks/useResource";
 import { useAuth } from "@/context/AuthContext";
 import apiClient from "@/services/apiClient";
@@ -46,6 +46,16 @@ export default function Bookings() {
     } finally {
       setBusyId(null);
     }
+  };
+
+  const sendInvoiceWa = async (id) => {
+    setBusyId(id);
+    try {
+      const r = await apiClient.post(`/bookings/${id}/send-invoice-wa`);
+      toast.success(`Invoice ${r.data?.number || ""} terkirim via WhatsApp`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Gagal mengirim invoice via WhatsApp");
+    } finally { setBusyId(null); }
   };
 
   // Mode "ACC ops dulu": permintaan dari web disetujui lalu unit DITAHAN + DP diminta
@@ -153,6 +163,9 @@ export default function Bookings() {
         }
         return (
           <div className="flex justify-end gap-1.5">
+            {["confirmed", "ongoing", "completed"].includes(r.status) ? (
+              <button className="icon-button !h-8 !w-8 !text-[#127A36]" title="Kirim invoice via WhatsApp" disabled={busyId === r.id} onClick={() => sendInvoiceWa(r.id)} data-testid={`booking-invoice-wa-${r.id}`}><MessageCircle size={13} /></button>
+            ) : null}
             {canPay(r) ? (
               <button className="secondary-button !px-2 !py-1 !text-[12px]" onClick={() => setPayBooking(r)} data-testid={`booking-pay-${r.id}`}><Wallet size={13} /> Bayar</button>
             ) : null}
